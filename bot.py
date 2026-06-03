@@ -2,101 +2,102 @@ import ccxt
 import pandas as pd
 import time
 import requests
+import os
 
-print("FINAL STABLE SNIPER BOT STARTING...")
+print("FINAL SECURE BOT RUNNING...")
 
-# ====== KEYS ======
-api_key = "mx0vgld2XcJB9tff"
-secret = "bb1b53bf127b474a90909fa83b81be8d"
+# ===== ENV (DO NOT HARDCODE KEYS) =====
+api_key = os.getenv("API_KEY")
+secret = os.getenv("API_SECRET")
+TG = os.getenv("TG_TOKEN")
+CHAT = os.getenv("CHAT_ID")
 
-# ====== TELEGRAM ======
-TELEGRAM_TOKEN = "888104666:AAFuqQPppcOv3BAQx-pZTJp2EkDzo7SPqxs"
-CHAT_ID = "7157590486"
-
-def send_telegram(msg):
+def tg(msg):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        requests.post(
+            f"https://api.telegram.org/bot{TG}/sendMessage",
+            data={"chat_id": CHAT, "text": msg}
+        )
     except:
         pass
 
-# ====== EXCHANGE ======
 exchange = ccxt.mexc({
     'apiKey': api_key,
     'secret': secret,
     'options': {'defaultType': 'swap'}
 })
 
-# ====== COINS (25 SAFE) ======
-symbols = [
-"BTC/USDT:USDT","ETH/USDT:USDT","XRP/USDT:USDT","DOGE/USDT:USDT","ADA/USDT:USDT",
-"TRX/USDT:USDT","SOL/USDT:USDT","MATIC/USDT:USDT","AVAX/USDT:USDT","LINK/USDT:USDT",
-"APT/USDT:USDT","ARB/USDT:USDT","OP/USDT:USDT","SUI/USDT:USDT","INJ/USDT:USDT",
-"NEAR/USDT:USDT","ATOM/USDT:USDT","LTC/USDT:USDT","ETC/USDT:USDT","DYDX/USDT:USDT",
-"UNI/USDT:USDT","SAND/USDT:USDT","APE/USDT:USDT","PEPE/USDT:USDT","SHIB/USDT:USDT"
-]
+# ===== SETTINGS =====
+USD_SIZE = 1        # ≈ $10 position
+LEV = 10
+SL_P = 0.02
+COOLDOWN = 3600
 
-# ====== SETTINGS ======
-USD_SIZE = 5
-LEVERAGE = 10
-SL_PERCENT = 0.02
-COOLDOWN = 60 * 60
-
-last_trade_time = 0
 positions = []
 
-# ====== HELPERS ======
-def get_price(symbol):
+# ===== COOLDOWN STORAGE =====
+def load_cd():
     try:
-        return exchange.fetch_ticker(symbol)["last"]
-    except:
-        return None
-
-def set_leverage(symbol):
-    try:
-        exchange.set_leverage(LEVERAGE, symbol)
-    except:
-        pass
-
-def safe_size(symbol):
-    try:
-        price = get_price(symbol)
-        if price is None:
-            return 0
-
-        target = USD_SIZE * LEVERAGE
-        raw_qty = target / price
-
-        qty = float(exchange.amount_to_precision(symbol, raw_qty))
-        notional = qty * price
-
-        if notional > target * 1.5:
-            print(symbol, "SKIP: too big")
-            return 0
-
-        return qty if qty > 0 else 0
-
+        return float(open("cd.txt").read())
     except:
         return 0
 
-def get_data(symbol, tf):
+def save_cd(t):
+    open("cd.txt", "w").write(str(t))
+
+last_trade = load_cd()
+
+# ===== HELPERS =====
+def price(sym):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, tf, limit=100)
+        return exchange.fetch_ticker(sym)["last"]
+    except:
+        return None
+
+def open_positions():
+    try:
+        return [p for p in exchange.fetch_positions() if float(p['contracts']) > 0]
+    except:
+        return []
+
+def size(sym):
+    p = price(sym)
+    if not p:
+        return 0
+
+    qty = (USD_SIZE * LEV) / p
+
+    try:
+        qty = float(exchange.amount_to_precision(sym, qty))
+    except:
+        return 0
+
+    # HARD SAFETY CAP (~$12 max position)
+    if qty * p > 12:
+        return 0
+
+    return qty
+
+def data(sym, tf):
+    try:
+        ohlcv = exchange.fetch_ohlcv(sym, tf, limit=100)
         return pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
     except:
         return None
 
-# ====== NEWS + WICK FILTER ======
-def news_spike(df):
+# ===== FILTERS =====
+def news(df):
     last = df.iloc[-1]
-    body = abs(last["c"] - last["o"]) / last["o"]
-    wick = (last["h"] - last["l"]) / last["l"]
-    return body > 0.02 or wick > 0.03
+    return abs(last["c"] - last["o"]) / last["o"] > 0.02
 
-# ====== LOGIC ======
+def wick(df):
+    last = df.iloc[-1]
+    return (last["h"] - last["l"]) / last["l"] > 0.03
+
+# ===== LOGIC =====
 def trend(df):
     ma = df["c"].rolling(20).mean()
-    return "bullish" if df["c"].iloc[-1] > ma.iloc[-1] else "bearish"
+    return "bull" if df["c"].iloc[-1] > ma.iloc[-1] else "bear"
 
 def sweep(df):
     return df["l"].iloc[-1] < df["l"].iloc[-10:-1].min() or df["h"].iloc[-1] > df["h"].iloc[-10:-1].max()
@@ -110,159 +111,167 @@ def fvg(df):
             return True
     return False
 
-# ====== SCORING ======
-def score_setup(df5, df15, df1h):
-    score = 0
+def score(df5, df15, df1h):
+    s = 0
+    if trend(df5) == trend(df15) == trend(df1h): s += 25
+    if sweep(df5): s += 20
+    if bos(df5): s += 20
+    if fvg(df5): s += 15
+    if abs(df5["c"].iloc[-1] - df5["c"].iloc[-5]) > 0: s += 10
+    return s, trend(df5)
 
-    if trend(df5) == trend(df15) == trend(df1h):
-        score += 25
-    if sweep(df5):
-        score += 20
-    if bos(df5):
-        score += 20
-    if fvg(df5):
-        score += 15
-    if abs(df5["c"].iloc[-1] - df5["c"].iloc[-5]) > 0:
-        score += 10
+# ===== EXECUTE =====
+def execute(sym, side):
+    global last_trade
 
-    return score, trend(df5)
-
-# ====== EXECUTION ======
-def execute_trade(symbol, side):
-    global last_trade_time
-
-    if time.time() - last_trade_time < COOLDOWN:
+    # MAX 2 POSITIONS
+    if len(open_positions()) >= 2:
         return
 
-    price = get_price(symbol)
-    qty = safe_size(symbol)
+    # PREVENT SAME COIN
+    for p in positions:
+        if p["symbol"] == sym:
+            return
 
-    if price is None or qty == 0:
+    # COOLDOWN
+    if time.time() - last_trade < COOLDOWN:
         return
 
-    set_leverage(symbol)
+    qty = size(sym)
+    p = price(sym)
 
-    if side == "LONG":
-        exchange.create_market_buy_order(symbol, qty)
-        sl = price * (1 - SL_PERCENT)
-        tp1 = price * (1 + 2 * SL_PERCENT)
-        tp2 = price * (1 + 3.5 * SL_PERCENT)
-    else:
-        exchange.create_market_sell_order(symbol, qty)
-        sl = price * (1 + SL_PERCENT)
-        tp1 = price * (1 - 2 * SL_PERCENT)
-        tp2 = price * (1 - 3.5 * SL_PERCENT)
+    if qty == 0 or p is None:
+        return
 
-    # REAL SL
     try:
-        exchange.create_order(
-            symbol,
-            "stop_market",
-            "sell" if side == "LONG" else "buy",
-            qty,
-            None,
-            {"stopPrice": sl}
-        )
-    except:
-        print("SL error")
+        if side == "LONG":
+            exchange.create_market_buy_order(sym, qty)
+            sl = p * (1 - SL_P)
+            tp1 = p * (1 + 2*SL_P)
+            tp2 = p * (1 + 3.5*SL_P)
+            close = "sell"
+        else:
+            exchange.create_market_sell_order(sym, qty)
+            sl = p * (1 + SL_P)
+            tp1 = p * (1 - 2*SL_P)
+            tp2 = p * (1 - 3.5*SL_P)
+            close = "buy"
+
+        # 🔥 MUST HAVE STOP LOSS
+        exchange.create_order(sym, "stop_market", close, qty, None, {"stopPrice": sl})
+
+    except Exception as e:
+        print("ORDER FAILED:", e)
+        last_trade = time.time()
+        save_cd(last_trade)
+        return
 
     positions.append({
-        "symbol": symbol,
+        "symbol": sym,
         "side": side,
         "qty": qty,
-        "entry": price,
+        "entry": p,
         "sl": sl,
         "tp1": tp1,
         "tp2": tp2,
-        "tp1_hit": False,
-        "trail": False
+        "tp1_hit": False
     })
 
-    last_trade_time = time.time()
+    last_trade = time.time()
+    save_cd(last_trade)
 
-    send_telegram(f"🚀 {symbol} {side} | 2RR / 3.5RR")
+    tg(f"{sym} {side}\nSL set\nTP1: {tp1}\nTP2: {tp2}")
 
-# ====== MAIN LOOP ======
-while True:
-    print("\n=== SCANNING ===")
-
-    best_symbol = None
-    best_score = 0
-    best_side = None
-
-    # 🔍 FULL SCAN FIRST
-    for sym in symbols:
-        try:
-            df5 = get_data(sym, "5m")
-            df15 = get_data(sym, "15m")
-            df1h = get_data(sym, "1h")
-
-            if df5 is None or df15 is None or df1h is None:
-                continue
-
-            if news_spike(df5):
-                print(sym, "SKIP: spike")
-                continue
-
-            score, t = score_setup(df5, df15, df1h)
-
-            print(sym, "Score:", score)
-
-            if score >= 70 and score > best_score:
-                best_score = score
-                best_symbol = sym
-                best_side = "LONG" if t == "bullish" else "SHORT"
-
-        except Exception as e:
-            print(sym, "ERR", e)
-
-    # 🚀 EXECUTE AFTER FULL SCAN
-    if best_symbol:
-        print(f"BEST: {best_symbol} | Score: {best_score}")
-        execute_trade(best_symbol, best_side)
-
-    # ====== POSITION MANAGEMENT ======
+# ===== MANAGE =====
+def manage():
     for p in positions[:]:
-        try:
-            price = get_price(p["symbol"])
-            if price is None:
-                continue
+        pr = price(p["symbol"])
+        if pr is None:
+            continue
 
+        try:
             if p["side"] == "LONG":
 
-                if not p["tp1_hit"] and price >= p["tp1"]:
+                # TP1
+                if not p["tp1_hit"] and pr >= p["tp1"]:
                     exchange.create_market_sell_order(p["symbol"], p["qty"]/2)
                     p["tp1_hit"] = True
                     p["sl"] = p["entry"]
-                    p["trail"] = True
-                    send_telegram(f"✅ TP1 {p['symbol']}")
+                    tg(f"TP1 HIT {p['symbol']}")
 
-                if p["trail"]:
-                    p["sl"] = max(p["sl"], price * 0.99)
+                # TRAILING
+                if p["tp1_hit"]:
+                    new_sl = pr * 0.99
+                    if new_sl > p["sl"]:
+                        p["sl"] = new_sl
 
-                if price >= p["tp2"] or price <= p["sl"]:
+                # FINAL CLOSE
+                if pr >= p["tp2"] or pr <= p["sl"]:
                     exchange.create_market_sell_order(p["symbol"], p["qty"])
                     positions.remove(p)
-                    send_telegram(f"🏁 CLOSED {p['symbol']}")
+                    tg(f"CLOSED {p['symbol']}")
 
             else:
 
-                if not p["tp1_hit"] and price <= p["tp1"]:
+                # TP1
+                if not p["tp1_hit"] and pr <= p["tp1"]:
                     exchange.create_market_buy_order(p["symbol"], p["qty"]/2)
                     p["tp1_hit"] = True
                     p["sl"] = p["entry"]
-                    p["trail"] = True
-                    send_telegram(f"✅ TP1 {p['symbol']}")
+                    tg(f"TP1 HIT {p['symbol']}")
 
-                if p["trail"]:
-                    p["sl"] = min(p["sl"], price * 1.01)
+                # TRAILING
+                if p["tp1_hit"]:
+                    new_sl = pr * 1.01
+                    if new_sl < p["sl"]:
+                        p["sl"] = new_sl
 
-                if price <= p["tp2"] or price >= p["sl"]:
+                # FINAL CLOSE
+                if pr <= p["tp2"] or pr >= p["sl"]:
                     exchange.create_market_buy_order(p["symbol"], p["qty"])
                     positions.remove(p)
-                    send_telegram(f"🏁 CLOSED {p['symbol']}")
+                    tg(f"CLOSED {p['symbol']}")
 
         except Exception as e:
-            print("Monitor error:", e)
+            print("MANAGE ERROR:", e)
+
+# ===== 25 COINS =====
+symbols = [
+"BTC/USDT:USDT","ETH/USDT:USDT","XRP/USDT:USDT","DOGE/USDT:USDT","ADA/USDT:USDT",
+"TRX/USDT:USDT","SOL/USDT:USDT","AVAX/USDT:USDT","LINK/USDT:USDT","APT/USDT:USDT",
+"ARB/USDT:USDT","OP/USDT:USDT","SUI/USDT:USDT","INJ/USDT:USDT","NEAR/USDT:USDT",
+"ATOM/USDT:USDT","LTC/USDT:USDT","ETC/USDT:USDT","DYDX/USDT:USDT","UNI/USDT:USDT",
+"SAND/USDT:USDT","APE/USDT:USDT","PEPE/USDT:USDT","SHIB/USDT:USDT","MATIC/USDT:USDT"
+]
+
+# ===== MAIN LOOP =====
+while True:
+    best = None
+    best_score = 0
+    best_side = None
+
+    for sym in symbols:
+        df5 = data(sym, "5m")
+        df15 = data(sym, "15m")
+        df1h = data(sym, "1h")
+
+        if df5 is None or df15 is None or df1h is None:
+            continue
+
+        if news(df5) or wick(df5):
+            continue
+
+        s, t = score(df5, df15, df1h)
+        perc = (s / 90) * 100
+
+        if perc >= 75 and perc > best_score:
+            best = sym
+            best_score = perc
+            best_side = "LONG" if t == "bull" else "SHORT"
+
+    if best:
+        execute(best, best_side)
+
+    manage()
 
     time.sleep(60)
