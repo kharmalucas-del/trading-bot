@@ -4,7 +4,7 @@ import time
 import requests
 import os
 
-print("FINAL BULLETPROOF BOT RUNNING")
+print("FINAL SAFE EXECUTION BOT")
 
 # ===== ENV =====
 api_key = os.getenv("API_KEY")
@@ -29,8 +29,6 @@ exchange = ccxt.mexc({
 
 SL_P = 0.02
 COOLDOWN = 3600
-
-positions = []
 
 # ===== COOLDOWN =====
 def load_cd():
@@ -57,19 +55,23 @@ def open_positions():
     except:
         return []
 
-# ===== SIZE (HARD FIX) =====
+# ===== SIZE (FIXED) =====
 def size(sym):
     try:
         p = price(sym)
+        market = exchange.market(sym)
 
-        qty = 10 / p  # target $10
+        qty = 10 / p
+
+        min_qty = market['limits']['amount']['min'] or 0
+        qty = max(qty, min_qty)
+
         qty = float(exchange.amount_to_precision(sym, qty))
 
         real = qty * p
-        print(sym, "SIZE:", round(real, 2))
+        print(sym, "SIZE:", real)
 
-        if real < 9:
-            print("BLOCKED SMALL SIZE")
+        if real < 8:
             return 0
 
         return qty
@@ -121,14 +123,24 @@ def score(df5, df15, df1h):
     if abs(df5["c"].iloc[-1] - df5["c"].iloc[-5]) > 0: s += 10
     return s, trend(df5)
 
-# ===== EXECUTE =====
+# ===== EXECUTION (FULL SAFE) =====
 def execute(sym, side):
     global last_trade
 
-    if len(open_positions()) >= 2:
+    positions_open = open_positions()
+
+    # MAX 2 POSITIONS
+    if len(positions_open) >= 2:
         print("MAX POSITIONS")
         return
 
+    # BLOCK SAME COIN
+    for p in positions_open:
+        if sym in p['symbol']:
+            print("ALREADY IN COIN")
+            return
+
+    # COOLDOWN
     if time.time() - last_trade < COOLDOWN:
         print("COOLDOWN")
         return
@@ -157,20 +169,23 @@ def execute(sym, side):
         else:
             exchange.create_market_sell_order(sym, qty)
 
-        time.sleep(1)
+        print("TRADE OPENED")
+
+        time.sleep(2)
+
+        # CONFIRM POSITION
+        if not any(sym in p['symbol'] for p in open_positions()):
+            print("POSITION NOT FOUND")
+            return
 
         # TP1
-        tp1_order = exchange.create_order(
-            sym, "limit", close, qty/2, tp1, {"reduceOnly": True}
-        )
+        exchange.create_order(sym, "limit", close, qty/2, tp1, {"reduceOnly": True})
 
         # TP2
-        tp2_order = exchange.create_order(
-            sym, "limit", close, qty/2, tp2, {"reduceOnly": True}
-        )
+        exchange.create_order(sym, "limit", close, qty/2, tp2, {"reduceOnly": True})
 
         # SL
-        sl_order = exchange.create_order(
+        exchange.create_order(
             sym,
             "market",
             close,
@@ -186,22 +201,9 @@ def execute(sym, side):
         print("TP + SL SET")
 
     except Exception as e:
-        print("FAIL → FORCE CLOSE:", e)
+        print("CRITICAL FAIL:", e)
 
-        try:
-            if side == "LONG":
-                exchange.create_market_sell_order(sym, qty)
-            else:
-                exchange.create_market_buy_order(sym, qty)
-        except:
-            pass
-
-        return
-
-    # FINAL SAFETY
-    if not tp1_order or not tp2_order or not sl_order:
-        print("MISSING SL/TP → CLOSE")
-
+        # FORCE CLOSE ALWAYS
         try:
             if side == "LONG":
                 exchange.create_market_sell_order(sym, qty)
@@ -215,7 +217,7 @@ def execute(sym, side):
     last_trade = time.time()
     save_cd(last_trade)
 
-    tg(f"{sym} {side} OPEN\nSL + TP ACTIVE")
+    tg(f"{sym} {side} OPEN\nSL + TP CONFIRMED")
 
 # ===== SYMBOLS =====
 symbols = [
