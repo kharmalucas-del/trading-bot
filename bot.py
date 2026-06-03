@@ -3,7 +3,7 @@ import pandas as pd
 import time
 import requests
 
-print("FINAL HYBRID BOT STARTING...")
+print("FINAL PRO BOT STARTING...")
 
 # ====== KEYS ======
 api_key = "mx0vgld2XcJBQm9tff"
@@ -40,16 +40,13 @@ symbols = [
 ]
 
 # ====== SETTINGS ======
-USD_SIZE = 7
+USD_SIZE = 5
 LEVERAGE = 10
 
 SL_PERCENT = 0.02
-TP1_PERCENT = 0.04
-TP2_PERCENT = 0.07
+COOLDOWN = 60 * 60
 
-COOLDOWN = 60 * 30
 last_trade_time = 0
-
 positions = []
 
 # ====== HELPERS ======
@@ -78,7 +75,7 @@ def get_data(symbol, tf):
     except:
         return None
 
-# ====== FILTERS ======
+# ====== FILTER ======
 def news_spike(df):
     last = df.iloc[-1]
     move = abs(last["c"] - last["o"]) / last["o"]
@@ -90,77 +87,67 @@ def trend(df):
     return "bullish" if df["c"].iloc[-1] > ma.iloc[-1] else "bearish"
 
 def sweep(df):
-    if df["l"].iloc[-1] < df["l"].iloc[-10:-1].min():
-        return "low"
-    if df["h"].iloc[-1] > df["h"].iloc[-10:-1].max():
-        return "high"
-    return None
+    return df["l"].iloc[-1] < df["l"].iloc[-10:-1].min() or df["h"].iloc[-1] > df["h"].iloc[-10:-1].max()
 
 def bos(df):
-    if df["c"].iloc[-1] > df["h"].iloc[-2]:
-        return "bullish"
-    if df["c"].iloc[-1] < df["l"].iloc[-2]:
-        return "bearish"
-    return None
+    return df["c"].iloc[-1] > df["h"].iloc[-2] or df["c"].iloc[-1] < df["l"].iloc[-2]
 
 def fvg(df):
     for i in range(len(df)-3):
-        if df["l"].iloc[i+2] > df["h"].iloc[i]:
-            return "bullish"
-        if df["h"].iloc[i+2] < df["l"].iloc[i]:
-            return "bearish"
-    return None
+        if df["l"].iloc[i+2] > df["h"].iloc[i] or df["h"].iloc[i+2] < df["l"].iloc[i]:
+            return True
+    return False
 
 # ====== SCORING ======
 def score_setup(df5, df15, df1h):
     score = 0
 
-    t5 = trend(df5)
-    t15 = trend(df15)
-    t1h = trend(df1h)
-
-    if t5 == t15 == t1h:
+    if trend(df5) == trend(df15) == trend(df1h):
         score += 25
-
     if sweep(df5):
         score += 20
-
     if bos(df5):
         score += 20
-
     if fvg(df5):
         score += 15
-
-    momentum = abs(df5["c"].iloc[-1] - df5["c"].iloc[-5])
-    if momentum > 0:
+    if abs(df5["c"].iloc[-1] - df5["c"].iloc[-5]) > 0:
         score += 10
 
-    return score, t5
+    return score, trend(df5)
 
-# ====== EXECUTION ======
+# ====== EXECUTE ======
 def execute_trade(symbol, side):
     global last_trade_time
 
     if time.time() - last_trade_time < COOLDOWN:
         return
 
-    set_leverage(symbol)
     price = get_price(symbol)
     qty = size(symbol)
 
     if price is None or qty == 0:
         return
 
+    set_leverage(symbol)
+
     if side == "LONG":
         exchange.create_market_buy_order(symbol, qty)
         sl = price * (1 - SL_PERCENT)
-        tp1 = price * (1 + TP1_PERCENT)
-        tp2 = price * (1 + TP2_PERCENT)
+        tp1 = price * (1 + 2 * SL_PERCENT)
+        tp2 = price * (1 + 3.5 * SL_PERCENT)
     else:
         exchange.create_market_sell_order(symbol, qty)
         sl = price * (1 + SL_PERCENT)
-        tp1 = price * (1 - TP1_PERCENT)
-        tp2 = price * (1 - TP2_PERCENT)
+        tp1 = price * (1 - 2 * SL_PERCENT)
+        tp2 = price * (1 - 3.5 * SL_PERCENT)
+
+    # REAL SL
+    try:
+        exchange.create_order(symbol, "stop_market",
+                              "sell" if side == "LONG" else "buy",
+                              qty, None, {"stopPrice": sl})
+    except:
+        pass
 
     positions.append({
         "symbol": symbol,
@@ -176,24 +163,15 @@ def execute_trade(symbol, side):
 
     last_trade_time = time.time()
 
-    send_telegram(f"🚀 OPEN {symbol} {side}")
-    print("OPEN", symbol, side)
+    send_telegram(f"🚀 {symbol} {side} | TP1 2RR | TP2 3.5RR")
 
-# ====== CLOSE ======
-def close_trade(p):
-    try:
-        if p["side"] == "LONG":
-            exchange.create_market_sell_order(p["symbol"], p["qty"])
-        else:
-            exchange.create_market_buy_order(p["symbol"], p["qty"])
-
-        send_telegram(f"❌ CLOSED {p['symbol']}")
-    except:
-        pass
-
-# ====== MAIN LOOP ======
+# ====== MAIN ======
 while True:
     print("\n=== SCANNING ===")
+
+    best_symbol = None
+    best_score = 0
+    best_side = None
 
     for sym in symbols:
         try:
@@ -205,31 +183,32 @@ while True:
                 continue
 
             if news_spike(df5):
-                print(sym, "SKIP: spike")
                 continue
 
-            score, trend_dir = score_setup(df5, df15, df1h)
+            score, t = score_setup(df5, df15, df1h)
 
             print(sym, "Score:", score)
 
-            if score >= 55:
-                if trend_dir == "bullish":
-                    execute_trade(sym, "LONG")
-                elif trend_dir == "bearish":
-                    execute_trade(sym, "SHORT")
+            if score > best_score and score >= 70:
+                best_score = score
+                best_symbol = sym
+                best_side = "LONG" if t == "bullish" else "SHORT"
 
-        except Exception as e:
-            print(sym, "ERR", e)
+        except:
+            pass
 
+    if best_symbol:
+        execute_trade(best_symbol, best_side)
+
+    # ====== POSITION MANAGEMENT ======
     for p in positions[:]:
         try:
             price = get_price(p["symbol"])
-            df = get_data(p["symbol"], "5m")
-
-            if df is None or price is None:
+            if price is None:
                 continue
 
             if p["side"] == "LONG":
+
                 if not p["tp1_hit"] and price >= p["tp1"]:
                     exchange.create_market_sell_order(p["symbol"], p["qty"]/2)
                     p["tp1_hit"] = True
@@ -241,10 +220,12 @@ while True:
                     p["sl"] = max(p["sl"], price * 0.99)
 
                 if price >= p["tp2"] or price <= p["sl"]:
-                    close_trade(p)
+                    exchange.create_market_sell_order(p["symbol"], p["qty"])
                     positions.remove(p)
+                    send_telegram(f"🏁 CLOSED {p['symbol']}")
 
             else:
+
                 if not p["tp1_hit"] and price <= p["tp1"]:
                     exchange.create_market_buy_order(p["symbol"], p["qty"]/2)
                     p["tp1_hit"] = True
@@ -256,8 +237,9 @@ while True:
                     p["sl"] = min(p["sl"], price * 1.01)
 
                 if price <= p["tp2"] or price >= p["sl"]:
-                    close_trade(p)
+                    exchange.create_market_buy_order(p["symbol"], p["qty"])
                     positions.remove(p)
+                    send_telegram(f"🏁 CLOSED {p['symbol']}")
 
         except Exception as e:
             print("Monitor error:", e)
