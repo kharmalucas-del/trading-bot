@@ -3,10 +3,10 @@ import pandas as pd
 import time
 import requests
 
-print("FINAL PRO BOT STARTING...")
+print("FINAL STABLE SNIPER BOT STARTING...")
 
 # ====== KEYS ======
-api_key = "mx0vgld2XcJBQmtff"
+api_key = "mx0vgld2XcJBQm9tff"
 secret = "bb1b53bf127b474a90909fa83b81be8d"
 
 # ====== TELEGRAM ======
@@ -27,22 +27,18 @@ exchange = ccxt.mexc({
     'options': {'defaultType': 'swap'}
 })
 
-# ====== COINS ======
+# ====== COINS (25 SAFE) ======
 symbols = [
-"BTC/USDT:USDT","ETH/USDT:USDT","SOL/USDT:USDT","XRP/USDT:USDT","DOGE/USDT:USDT",
-"BNB/USDT:USDT","ADA/USDT:USDT","AVAX/USDT:USDT","LINK/USDT:USDT","MATIC/USDT:USDT",
+"BTC/USDT:USDT","ETH/USDT:USDT","XRP/USDT:USDT","DOGE/USDT:USDT","ADA/USDT:USDT",
+"TRX/USDT:USDT","SOL/USDT:USDT","MATIC/USDT:USDT","AVAX/USDT:USDT","LINK/USDT:USDT",
 "APT/USDT:USDT","ARB/USDT:USDT","OP/USDT:USDT","SUI/USDT:USDT","INJ/USDT:USDT",
-"RNDR/USDT:USDT","FTM/USDT:USDT","NEAR/USDT:USDT","GALA/USDT:USDT","ATOM/USDT:USDT",
-"LTC/USDT:USDT","ETC/USDT:USDT","FIL/USDT:USDT","AAVE/USDT:USDT","DYDX/USDT:USDT",
-"GMX/USDT:USDT","SNX/USDT:USDT","UNI/USDT:USDT","SAND/USDT:USDT","APE/USDT:USDT",
-"TRX/USDT:USDT","EOS/USDT:USDT","PEPE/USDT:USDT","SHIB/USDT:USDT","CRV/USDT:USDT",
-"BLUR/USDT:USDT","SEI/USDT:USDT","ORDI/USDT:USDT","STX/USDT:USDT","FLOW/USDT:USDT"
+"NEAR/USDT:USDT","ATOM/USDT:USDT","LTC/USDT:USDT","ETC/USDT:USDT","DYDX/USDT:USDT",
+"UNI/USDT:USDT","SAND/USDT:USDT","APE/USDT:USDT","PEPE/USDT:USDT","SHIB/USDT:USDT"
 ]
 
 # ====== SETTINGS ======
 USD_SIZE = 5
 LEVERAGE = 10
-
 SL_PERCENT = 0.02
 COOLDOWN = 60 * 60
 
@@ -62,11 +58,26 @@ def set_leverage(symbol):
     except:
         pass
 
-def size(symbol):
-    price = get_price(symbol)
-    if price is None:
+def safe_size(symbol):
+    try:
+        price = get_price(symbol)
+        if price is None:
+            return 0
+
+        target = USD_SIZE * LEVERAGE
+        raw_qty = target / price
+
+        qty = float(exchange.amount_to_precision(symbol, raw_qty))
+        notional = qty * price
+
+        if notional > target * 1.5:
+            print(symbol, "SKIP: too big")
+            return 0
+
+        return qty if qty > 0 else 0
+
+    except:
         return 0
-    return max(round((USD_SIZE * LEVERAGE) / price, 4), 0.001)
 
 def get_data(symbol, tf):
     try:
@@ -75,11 +86,12 @@ def get_data(symbol, tf):
     except:
         return None
 
-# ====== FILTER ======
+# ====== NEWS + WICK FILTER ======
 def news_spike(df):
     last = df.iloc[-1]
-    move = abs(last["c"] - last["o"]) / last["o"]
-    return move > 0.02
+    body = abs(last["c"] - last["o"]) / last["o"]
+    wick = (last["h"] - last["l"]) / last["l"]
+    return body > 0.02 or wick > 0.03
 
 # ====== LOGIC ======
 def trend(df):
@@ -115,7 +127,7 @@ def score_setup(df5, df15, df1h):
 
     return score, trend(df5)
 
-# ====== EXECUTE ======
+# ====== EXECUTION ======
 def execute_trade(symbol, side):
     global last_trade_time
 
@@ -123,7 +135,7 @@ def execute_trade(symbol, side):
         return
 
     price = get_price(symbol)
-    qty = size(symbol)
+    qty = safe_size(symbol)
 
     if price is None or qty == 0:
         return
@@ -143,11 +155,16 @@ def execute_trade(symbol, side):
 
     # REAL SL
     try:
-        exchange.create_order(symbol, "stop_market",
-                              "sell" if side == "LONG" else "buy",
-                              qty, None, {"stopPrice": sl})
+        exchange.create_order(
+            symbol,
+            "stop_market",
+            "sell" if side == "LONG" else "buy",
+            qty,
+            None,
+            {"stopPrice": sl}
+        )
     except:
-        pass
+        print("SL error")
 
     positions.append({
         "symbol": symbol,
@@ -158,14 +175,14 @@ def execute_trade(symbol, side):
         "tp1": tp1,
         "tp2": tp2,
         "tp1_hit": False,
-        "trail_active": False
+        "trail": False
     })
 
     last_trade_time = time.time()
 
-    send_telegram(f"🚀 {symbol} {side} | TP1 2RR | TP2 3.5RR")
+    send_telegram(f"🚀 {symbol} {side} | 2RR / 3.5RR")
 
-# ====== MAIN ======
+# ====== MAIN LOOP ======
 while True:
     print("\n=== SCANNING ===")
 
@@ -173,6 +190,7 @@ while True:
     best_score = 0
     best_side = None
 
+    # 🔍 FULL SCAN FIRST
     for sym in symbols:
         try:
             df5 = get_data(sym, "5m")
@@ -183,21 +201,24 @@ while True:
                 continue
 
             if news_spike(df5):
+                print(sym, "SKIP: spike")
                 continue
 
             score, t = score_setup(df5, df15, df1h)
 
             print(sym, "Score:", score)
 
-            if score > best_score and score >= 70:
+            if score >= 70 and score > best_score:
                 best_score = score
                 best_symbol = sym
                 best_side = "LONG" if t == "bullish" else "SHORT"
 
-        except:
-            pass
+        except Exception as e:
+            print(sym, "ERR", e)
 
+    # 🚀 EXECUTE AFTER FULL SCAN
     if best_symbol:
+        print(f"BEST: {best_symbol} | Score: {best_score}")
         execute_trade(best_symbol, best_side)
 
     # ====== POSITION MANAGEMENT ======
@@ -213,10 +234,10 @@ while True:
                     exchange.create_market_sell_order(p["symbol"], p["qty"]/2)
                     p["tp1_hit"] = True
                     p["sl"] = p["entry"]
-                    p["trail_active"] = True
+                    p["trail"] = True
                     send_telegram(f"✅ TP1 {p['symbol']}")
 
-                if p["trail_active"]:
+                if p["trail"]:
                     p["sl"] = max(p["sl"], price * 0.99)
 
                 if price >= p["tp2"] or price <= p["sl"]:
@@ -230,10 +251,10 @@ while True:
                     exchange.create_market_buy_order(p["symbol"], p["qty"]/2)
                     p["tp1_hit"] = True
                     p["sl"] = p["entry"]
-                    p["trail_active"] = True
+                    p["trail"] = True
                     send_telegram(f"✅ TP1 {p['symbol']}")
 
-                if p["trail_active"]:
+                if p["trail"]:
                     p["sl"] = min(p["sl"], price * 1.01)
 
                 if price <= p["tp2"] or price >= p["sl"]:
