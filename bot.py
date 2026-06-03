@@ -10,7 +10,7 @@ api_key = "mx0vgld2XcJBQm9tff"
 secret = "bb1b53bf127b474a90909fa83b81be8d"
 
 # ====== TELEGRAM ======
-TELEGRAM_TOKEN = "8881043666:AAFuqQPppcOv3BAQx-pZTJp2EkDzo7SPqxs"
+TELEGRAM_TOKEN = "888104666:AAFuqQPppcOv3BAQx-pZTJp2EkDzo7SPqxs"
 CHAT_ID = "7157590486"
 
 def send_telegram(msg):
