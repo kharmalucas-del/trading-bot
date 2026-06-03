@@ -4,13 +4,22 @@ import time
 import requests
 import os
 
-print("FINAL SECURE BOT RUNNING...")
+print("🚀 BOT STARTING...")
 
-# ===== ENV (DO NOT HARDCODE KEYS) =====
+# ===== ENV =====
 api_key = os.getenv("API_KEY")
 secret = os.getenv("API_SECRET")
 TG = os.getenv("TG_TOKEN")
 CHAT = os.getenv("CHAT_ID")
+
+print("API KEY:", api_key)
+print("SECRET:", secret)
+print("TG:", TG)
+print("CHAT:", CHAT)
+
+# 🚨 STOP if keys missing
+if not api_key or not secret:
+    raise Exception("❌ API KEYS NOT FOUND")
 
 def tg(msg):
     try:
@@ -28,14 +37,14 @@ exchange = ccxt.mexc({
 })
 
 # ===== SETTINGS =====
-USD_SIZE = 1        # ≈ $10 position
+USD_SIZE = 1
 LEV = 10
 SL_P = 0.02
 COOLDOWN = 3600
 
 positions = []
 
-# ===== COOLDOWN STORAGE =====
+# ===== COOLDOWN =====
 def load_cd():
     try:
         return float(open("cd.txt").read())
@@ -51,13 +60,15 @@ last_trade = load_cd()
 def price(sym):
     try:
         return exchange.fetch_ticker(sym)["last"]
-    except:
+    except Exception as e:
+        print("PRICE ERROR:", e)
         return None
 
 def open_positions():
     try:
         return [p for p in exchange.fetch_positions() if float(p['contracts']) > 0]
-    except:
+    except Exception as e:
+        print("POSITION ERROR:", e)
         return []
 
 def size(sym):
@@ -69,10 +80,10 @@ def size(sym):
 
     try:
         qty = float(exchange.amount_to_precision(sym, qty))
-    except:
+    except Exception as e:
+        print("SIZE ERROR:", e)
         return 0
 
-    # HARD SAFETY CAP (~$12 max position)
     if qty * p > 12:
         return 0
 
@@ -82,7 +93,8 @@ def data(sym, tf):
     try:
         ohlcv = exchange.fetch_ohlcv(sym, tf, limit=100)
         return pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
-    except:
+    except Exception as e:
+        print("DATA ERROR:", sym, e)
         return None
 
 # ===== FILTERS =====
@@ -124,23 +136,26 @@ def score(df5, df15, df1h):
 def execute(sym, side):
     global last_trade
 
-    # MAX 2 POSITIONS
+    print("TRYING TRADE:", sym, side)
+
     if len(open_positions()) >= 2:
+        print("MAX POSITIONS")
         return
 
-    # PREVENT SAME COIN
     for p in positions:
         if p["symbol"] == sym:
+            print("ALREADY IN THIS COIN")
             return
 
-    # COOLDOWN
     if time.time() - last_trade < COOLDOWN:
+        print("COOLDOWN ACTIVE")
         return
 
     qty = size(sym)
     p = price(sym)
 
     if qty == 0 or p is None:
+        print("INVALID SIZE")
         return
 
     try:
@@ -157,7 +172,6 @@ def execute(sym, side):
             tp2 = p * (1 - 3.5*SL_P)
             close = "buy"
 
-        # 🔥 MUST HAVE STOP LOSS
         exchange.create_order(sym, "stop_market", close, qty, None, {"stopPrice": sl})
 
     except Exception as e:
@@ -180,62 +194,9 @@ def execute(sym, side):
     last_trade = time.time()
     save_cd(last_trade)
 
-    tg(f"{sym} {side}\nSL set\nTP1: {tp1}\nTP2: {tp2}")
+    tg(f"{sym} {side} OPEN")
 
-# ===== MANAGE =====
-def manage():
-    for p in positions[:]:
-        pr = price(p["symbol"])
-        if pr is None:
-            continue
-
-        try:
-            if p["side"] == "LONG":
-
-                # TP1
-                if not p["tp1_hit"] and pr >= p["tp1"]:
-                    exchange.create_market_sell_order(p["symbol"], p["qty"]/2)
-                    p["tp1_hit"] = True
-                    p["sl"] = p["entry"]
-                    tg(f"TP1 HIT {p['symbol']}")
-
-                # TRAILING
-                if p["tp1_hit"]:
-                    new_sl = pr * 0.99
-                    if new_sl > p["sl"]:
-                        p["sl"] = new_sl
-
-                # FINAL CLOSE
-                if pr >= p["tp2"] or pr <= p["sl"]:
-                    exchange.create_market_sell_order(p["symbol"], p["qty"])
-                    positions.remove(p)
-                    tg(f"CLOSED {p['symbol']}")
-
-            else:
-
-                # TP1
-                if not p["tp1_hit"] and pr <= p["tp1"]:
-                    exchange.create_market_buy_order(p["symbol"], p["qty"]/2)
-                    p["tp1_hit"] = True
-                    p["sl"] = p["entry"]
-                    tg(f"TP1 HIT {p['symbol']}")
-
-                # TRAILING
-                if p["tp1_hit"]:
-                    new_sl = pr * 1.01
-                    if new_sl < p["sl"]:
-                        p["sl"] = new_sl
-
-                # FINAL CLOSE
-                if pr <= p["tp2"] or pr >= p["sl"]:
-                    exchange.create_market_buy_order(p["symbol"], p["qty"])
-                    positions.remove(p)
-                    tg(f"CLOSED {p['symbol']}")
-
-        except Exception as e:
-            print("MANAGE ERROR:", e)
-
-# ===== 25 COINS =====
+# ===== MAIN =====
 symbols = [
 "BTC/USDT:USDT","ETH/USDT:USDT","XRP/USDT:USDT","DOGE/USDT:USDT","ADA/USDT:USDT",
 "TRX/USDT:USDT","SOL/USDT:USDT","AVAX/USDT:USDT","LINK/USDT:USDT","APT/USDT:USDT",
@@ -244,8 +205,9 @@ symbols = [
 "SAND/USDT:USDT","APE/USDT:USDT","PEPE/USDT:USDT","SHIB/USDT:USDT","MATIC/USDT:USDT"
 ]
 
-# ===== MAIN LOOP =====
 while True:
+    print("🔍 SCANNING...")
+
     best = None
     best_score = 0
     best_side = None
@@ -264,14 +226,15 @@ while True:
         s, t = score(df5, df15, df1h)
         perc = (s / 90) * 100
 
+        print(sym, perc)
+
         if perc >= 75 and perc > best_score:
             best = sym
             best_score = perc
             best_side = "LONG" if t == "bull" else "SHORT"
 
     if best:
+        print("BEST:", best)
         execute(best, best_side)
-
-    manage()
 
     time.sleep(60)
