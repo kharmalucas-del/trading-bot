@@ -3,7 +3,7 @@ import pandas as pd
 import time
 import requests
 
-print("AI FILTER BOT STARTING...")
+print("FINAL HYBRID BOT STARTING...")
 
 # ====== KEYS ======
 api_key = "mx0vgld2XcJBQm9tff"
@@ -24,37 +24,41 @@ def send_telegram(msg):
 exchange = ccxt.mexc({
     'apiKey': api_key,
     'secret': secret,
-    'options': {'defaultType': 'swap'},
-    'urls': {
-        'api': {
-            'public': 'https://contract.mexc.com',
-            'private': 'https://contract.mexc.com',
-        }
-    }
+    'options': {'defaultType': 'swap'}
 })
 
+# ====== COINS ======
 symbols = [
-    "BTC/USDT:USDT","ETH/USDT:USDT","SOL/USDT:USDT",
-    "XRP/USDT:USDT","DOGE/USDT:USDT","BNB/USDT:USDT",
-    "ADA/USDT:USDT","AVAX/USDT:USDT","LINK/USDT:USDT",
-    "MATIC/USDT:USDT","APT/USDT:USDT","ARB/USDT:USDT",
-    "OP/USDT:USDT","SUI/USDT:USDT"
+"BTC/USDT:USDT","ETH/USDT:USDT","SOL/USDT:USDT","XRP/USDT:USDT","DOGE/USDT:USDT",
+"BNB/USDT:USDT","ADA/USDT:USDT","AVAX/USDT:USDT","LINK/USDT:USDT","MATIC/USDT:USDT",
+"APT/USDT:USDT","ARB/USDT:USDT","OP/USDT:USDT","SUI/USDT:USDT","INJ/USDT:USDT",
+"RNDR/USDT:USDT","FTM/USDT:USDT","NEAR/USDT:USDT","GALA/USDT:USDT","ATOM/USDT:USDT",
+"LTC/USDT:USDT","ETC/USDT:USDT","FIL/USDT:USDT","AAVE/USDT:USDT","DYDX/USDT:USDT",
+"GMX/USDT:USDT","SNX/USDT:USDT","UNI/USDT:USDT","SAND/USDT:USDT","APE/USDT:USDT",
+"TRX/USDT:USDT","EOS/USDT:USDT","PEPE/USDT:USDT","SHIB/USDT:USDT","CRV/USDT:USDT",
+"BLUR/USDT:USDT","SEI/USDT:USDT","ORDI/USDT:USDT","STX/USDT:USDT","FLOW/USDT:USDT"
 ]
 
 # ====== SETTINGS ======
-USD_SIZE = 70
+USD_SIZE = 7
 LEVERAGE = 10
 
 SL_PERCENT = 0.02
 TP1_PERCENT = 0.04
 TP2_PERCENT = 0.07
 
-COOLDOWN = 60 * 60 * 2
+COOLDOWN = 60 * 30
 last_trade_time = 0
 
 positions = []
 
 # ====== HELPERS ======
+def get_price(symbol):
+    try:
+        return exchange.fetch_ticker(symbol)["last"]
+    except:
+        return None
+
 def set_leverage(symbol):
     try:
         exchange.set_leverage(LEVERAGE, symbol)
@@ -62,131 +66,90 @@ def set_leverage(symbol):
         pass
 
 def size(symbol):
-    price = exchange.fetch_ticker(symbol)["last"]
-    return round((USD_SIZE * LEVERAGE) / price, 6)
+    price = get_price(symbol)
+    if price is None:
+        return 0
+    return max(round((USD_SIZE * LEVERAGE) / price, 4), 0.001)
 
 def get_data(symbol, tf):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, tf, limit=100)
-        return pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
+        return pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
     except:
         return None
 
-# ====== AI FILTERS ======
-def high_volatility(df):
+# ====== FILTERS ======
+def news_spike(df):
     last = df.iloc[-1]
-    move = abs(last["close"] - last["open"]) / last["open"]
-    wick = (last["high"] - last["low"]) / last["low"]
-    return move > 0.02 or wick > 0.03
-
-def ranging_market(df):
-    high = df["high"].iloc[-20:].max()
-    low = df["low"].iloc[-20:].min()
-    return (high - low) / low < 0.01
-
-def strong_momentum(df):
-    return abs(df["close"].iloc[-1] - df["close"].iloc[-5]) > 0
-
-def strong_trend(df):
-    ma = df["close"].rolling(20).mean()
-    return abs(df["close"].iloc[-1] - ma.iloc[-1]) / ma.iloc[-1] > 0.002
+    move = abs(last["c"] - last["o"]) / last["o"]
+    return move > 0.02
 
 # ====== LOGIC ======
 def trend(df):
-    ma = df["close"].rolling(20).mean()
-    return "bullish" if df["close"].iloc[-1] > ma.iloc[-1] else "bearish"
+    ma = df["c"].rolling(20).mean()
+    return "bullish" if df["c"].iloc[-1] > ma.iloc[-1] else "bearish"
 
 def sweep(df):
-    if df["low"].iloc[-1] < df["low"].iloc[-10:-1].min():
-        return "sweep_low"
-    if df["high"].iloc[-1] > df["high"].iloc[-10:-1].max():
-        return "sweep_high"
+    if df["l"].iloc[-1] < df["l"].iloc[-10:-1].min():
+        return "low"
+    if df["h"].iloc[-1] > df["h"].iloc[-10:-1].max():
+        return "high"
     return None
 
 def bos(df):
-    if df["close"].iloc[-1] > df["high"].iloc[-2]:
+    if df["c"].iloc[-1] > df["h"].iloc[-2]:
         return "bullish"
-    if df["close"].iloc[-1] < df["low"].iloc[-2]:
+    if df["c"].iloc[-1] < df["l"].iloc[-2]:
         return "bearish"
     return None
 
 def fvg(df):
     for i in range(len(df)-3):
-        if i+2 >= len(df):
-            continue
-        if df["low"].iloc[i+2] > df["high"].iloc[i]:
+        if df["l"].iloc[i+2] > df["h"].iloc[i]:
             return "bullish"
-        if df["high"].iloc[i+2] < df["low"].iloc[i]:
+        if df["h"].iloc[i+2] < df["l"].iloc[i]:
             return "bearish"
     return None
 
-# ====== SIGNAL ======
-def signal(symbol):
-    df = get_data(symbol, "5m")
-    df_htf = get_data(symbol, "1h")
+# ====== SCORING ======
+def score_setup(df5, df15, df1h):
+    score = 0
 
-    if df is None or df_htf is None:
-        return None
+    t5 = trend(df5)
+    t15 = trend(df15)
+    t1h = trend(df1h)
 
-    # 🔥 AI FILTERS
-    if high_volatility(df):
-        print(symbol, "SKIP: volatility")
-        return None
+    if t5 == t15 == t1h:
+        score += 25
 
-    if ranging_market(df):
-        print(symbol, "SKIP: ranging")
-        return None
+    if sweep(df5):
+        score += 20
 
-    if not strong_momentum(df):
-        print(symbol, "SKIP: no momentum")
-        return None
+    if bos(df5):
+        score += 20
 
-    if not strong_trend(df_htf):
-        print(symbol, "SKIP: weak trend")
-        return None
+    if fvg(df5):
+        score += 15
 
-    t1 = trend(df)
-    t2 = trend(df_htf)
-    s = sweep(df)
-    b = bos(df)
-    f = fvg(df)
+    momentum = abs(df5["c"].iloc[-1] - df5["c"].iloc[-5])
+    if momentum > 0:
+        score += 10
 
-    print(f"{symbol} → {t1} {t2} {s} {b} {f}")
-
-    if t1 == "bullish" and t2 == "bullish":
-        if s == "sweep_low" and (b == "bullish" or f == "bullish"):
-            return "LONG"
-
-    if t1 == "bearish" and t2 == "bearish":
-        if s == "sweep_high" and (b == "bearish" or f == "bearish"):
-            return "SHORT"
-
-    return None
-
-# ====== STRUCTURE BREAK ======
-def structure_break(df, side):
-    low = df["low"].iloc[-5:].min()
-    high = df["high"].iloc[-5:].max()
-    price = df["close"].iloc[-1]
-
-    if side == "LONG" and price < low:
-        return True
-    if side == "SHORT" and price > high:
-        return True
-
-    return False
+    return score, t5
 
 # ====== EXECUTION ======
 def execute_trade(symbol, side):
     global last_trade_time
 
-    now = time.time()
-    if now - last_trade_time < COOLDOWN:
+    if time.time() - last_trade_time < COOLDOWN:
         return
 
     set_leverage(symbol)
-    price = exchange.fetch_ticker(symbol)["last"]
+    price = get_price(symbol)
     qty = size(symbol)
+
+    if price is None or qty == 0:
+        return
 
     if side == "LONG":
         exchange.create_market_buy_order(symbol, qty)
@@ -208,11 +171,10 @@ def execute_trade(symbol, side):
         "tp1": tp1,
         "tp2": tp2,
         "tp1_hit": False,
-        "breakeven": False,
         "trail_active": False
     })
 
-    last_trade_time = now
+    last_trade_time = time.time()
 
     send_telegram(f"🚀 OPEN {symbol} {side}")
     print("OPEN", symbol, side)
@@ -235,21 +197,36 @@ while True:
 
     for sym in symbols:
         try:
-            sig = signal(sym)
-            if sig:
-                execute_trade(sym, sig)
+            df5 = get_data(sym, "5m")
+            df15 = get_data(sym, "15m")
+            df1h = get_data(sym, "1h")
+
+            if df5 is None or df15 is None or df1h is None:
+                continue
+
+            if news_spike(df5):
+                print(sym, "SKIP: spike")
+                continue
+
+            score, trend_dir = score_setup(df5, df15, df1h)
+
+            print(sym, "Score:", score)
+
+            if score >= 55:
+                if trend_dir == "bullish":
+                    execute_trade(sym, "LONG")
+                elif trend_dir == "bearish":
+                    execute_trade(sym, "SHORT")
+
         except Exception as e:
             print(sym, "ERR", e)
 
     for p in positions[:]:
         try:
-            price = exchange.fetch_ticker(p["symbol"])["last"]
+            price = get_price(p["symbol"])
             df = get_data(p["symbol"], "5m")
 
-            if structure_break(df, p["side"]):
-                send_telegram(f"⚠️ STRUCTURE BREAK {p['symbol']}")
-                close_trade(p)
-                positions.remove(p)
+            if df is None or price is None:
                 continue
 
             if p["side"] == "LONG":
@@ -258,7 +235,7 @@ while True:
                     p["tp1_hit"] = True
                     p["sl"] = p["entry"]
                     p["trail_active"] = True
-                    send_telegram(f"✅ TP1 + BE {p['symbol']}")
+                    send_telegram(f"✅ TP1 {p['symbol']}")
 
                 if p["trail_active"]:
                     p["sl"] = max(p["sl"], price * 0.99)
@@ -273,7 +250,7 @@ while True:
                     p["tp1_hit"] = True
                     p["sl"] = p["entry"]
                     p["trail_active"] = True
-                    send_telegram(f"✅ TP1 + BE {p['symbol']}")
+                    send_telegram(f"✅ TP1 {p['symbol']}")
 
                 if p["trail_active"]:
                     p["sl"] = min(p["sl"], price * 1.01)
