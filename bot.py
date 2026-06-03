@@ -4,7 +4,7 @@ import time
 import requests
 import os
 
-print("FINAL PRO BOT RUNNING")
+print("FINAL BULLETPROOF BOT RUNNING")
 
 # ===== ENV =====
 api_key = os.getenv("API_KEY")
@@ -32,6 +32,7 @@ COOLDOWN = 3600
 
 positions = []
 
+# ===== COOLDOWN =====
 def load_cd():
     try:
         return float(open("cd.txt").read())
@@ -56,18 +57,25 @@ def open_positions():
     except:
         return []
 
-# ===== SIZE FIX =====
+# ===== SIZE (HARD FIX) =====
 def size(sym):
     try:
         p = price(sym)
-        qty = 10 / p
+
+        qty = 10 / p  # target $10
         qty = float(exchange.amount_to_precision(sym, qty))
 
-        if qty * p < 8:
+        real = qty * p
+        print(sym, "SIZE:", round(real, 2))
+
+        if real < 9:
+            print("BLOCKED SMALL SIZE")
             return 0
 
         return qty
-    except:
+
+    except Exception as e:
+        print("SIZE ERROR:", e)
         return 0
 
 # ===== DATA =====
@@ -113,14 +121,16 @@ def score(df5, df15, df1h):
     if abs(df5["c"].iloc[-1] - df5["c"].iloc[-5]) > 0: s += 10
     return s, trend(df5)
 
-# ===== EXECUTION =====
+# ===== EXECUTE =====
 def execute(sym, side):
     global last_trade
 
     if len(open_positions()) >= 2:
+        print("MAX POSITIONS")
         return
 
     if time.time() - last_trade < COOLDOWN:
+        print("COOLDOWN")
         return
 
     qty = size(sym)
@@ -147,14 +157,20 @@ def execute(sym, side):
         else:
             exchange.create_market_sell_order(sym, qty)
 
-        # TP1 (half)
-        exchange.create_order(sym, "limit", close, qty/2, tp1, {"reduceOnly": True})
+        time.sleep(1)
 
-        # TP2 (full remaining)
-        exchange.create_order(sym, "limit", close, qty/2, tp2, {"reduceOnly": True})
+        # TP1
+        tp1_order = exchange.create_order(
+            sym, "limit", close, qty/2, tp1, {"reduceOnly": True}
+        )
+
+        # TP2
+        tp2_order = exchange.create_order(
+            sym, "limit", close, qty/2, tp2, {"reduceOnly": True}
+        )
 
         # SL
-        exchange.create_order(
+        sl_order = exchange.create_order(
             sym,
             "market",
             close,
@@ -167,8 +183,11 @@ def execute(sym, side):
             }
         )
 
+        print("TP + SL SET")
+
     except Exception as e:
-        print("SL/TP FAILED → CLOSING:", e)
+        print("FAIL → FORCE CLOSE:", e)
+
         try:
             if side == "LONG":
                 exchange.create_market_sell_order(sym, qty)
@@ -176,45 +195,27 @@ def execute(sym, side):
                 exchange.create_market_buy_order(sym, qty)
         except:
             pass
+
         return
 
-    positions.append({
-        "symbol": sym,
-        "side": side,
-        "qty": qty,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp1_hit": False
-    })
+    # FINAL SAFETY
+    if not tp1_order or not tp2_order or not sl_order:
+        print("MISSING SL/TP → CLOSE")
+
+        try:
+            if side == "LONG":
+                exchange.create_market_sell_order(sym, qty)
+            else:
+                exchange.create_market_buy_order(sym, qty)
+        except:
+            pass
+
+        return
 
     last_trade = time.time()
     save_cd(last_trade)
 
-    tg(f"{sym} {side} OPEN\nSL+TP ACTIVE")
-
-# ===== MANAGE =====
-def manage():
-    for p in positions[:]:
-        pr = price(p["symbol"])
-
-        if p["side"] == "LONG":
-
-            if not p["tp1_hit"] and pr >= p["tp1"]:
-                p["tp1_hit"] = True
-                p["sl"] = p["entry"]
-
-            if p["tp1_hit"]:
-                p["sl"] = max(p["sl"], pr * 0.99)
-
-        else:
-
-            if not p["tp1_hit"] and pr <= p["tp1"]:
-                p["tp1_hit"] = True
-                p["sl"] = p["entry"]
-
-            if p["tp1_hit"]:
-                p["sl"] = min(p["sl"], pr * 1.01)
+    tg(f"{sym} {side} OPEN\nSL + TP ACTIVE")
 
 # ===== SYMBOLS =====
 symbols = [
@@ -225,7 +226,7 @@ symbols = [
 "SAND/USDT:USDT","APE/USDT:USDT","PEPE/USDT:USDT","SHIB/USDT:USDT","POL/USDT:USDT"
 ]
 
-# ===== LOOP =====
+# ===== MAIN LOOP =====
 while True:
     best = None
     best_score = 0
@@ -251,8 +252,7 @@ while True:
             best_side = "LONG" if t == "bull" else "SHORT"
 
     if best and best_score >= 75:
+        print("BEST:", best)
         execute(best, best_side)
-
-    manage()
 
     time.sleep(60)
