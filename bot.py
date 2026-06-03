@@ -6,7 +6,7 @@ import requests
 print("FINAL PRO BOT STARTING...")
 
 # ====== KEYS ======
-api_key = "mx0vgld2XcJBQm9tff"
+api_key = "mx0vgld2XcJBQmtff"
 secret = "bb1b53bf127b474a90909fa83b81be8d"
 
 # ====== TELEGRAM ======
