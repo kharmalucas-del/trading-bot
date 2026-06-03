@@ -42,7 +42,7 @@ symbols = [
 ]
 
 # ====== SETTINGS ======
-USD_SIZE = 7
+USD_SIZE = 70
 LEVERAGE = 10
 
 SL_PERCENT = 0.02
